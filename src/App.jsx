@@ -267,9 +267,10 @@ export default function App() {
       .trim()
   }
 
-  // ─── TTS 큐 프로세서 ──────────────────────────────────────
-  // ttsQueueRef 에 쌓인 문장을 순차로 /api/tts → vrmAvatar.speak() 처리.
-  // 한 번에 하나만 — 다음 문장은 현재 문장이 끝난 후 시작.
+  // ─── TTS 큐 프로세서 (parallel pre-fetch 버전) ────────────────
+  // 큐에는 Promise<ArrayBuffer> 가 들어있다. enqueueTTS 가 fetch 를 즉시 시작
+  // 하므로, 문장 N 재생 중에 문장 N+1, N+2 TTS 가 병렬로 진행됨.
+  // → 문장 사이 침묵 ~1초 → ~50-100ms (audio context 스케줄링 한계)
   const processTTSQueue = useCallback(async () => {
     if (ttsRunningRef.current) return
     ttsRunningRef.current = true
@@ -277,38 +278,32 @@ export default function App() {
 
     try {
       while (ttsQueueRef.current.length > 0 && !ttsAbortRef.current) {
-        const sentence = ttsQueueRef.current.shift()
-        const clean = sanitizeForTTS(normalizeTtsText(sentence))
-        if (!clean) continue
+        const bufPromise = ttsQueueRef.current.shift()
+        if (!bufPromise) continue
 
+        let buf
         try {
-          const res = await fetch('/api/tts', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text: clean }),
-          })
-          if (!res.ok) { console.warn('[tts] http', res.status); continue }
-          const buf = await res.arrayBuffer()
-
-          if (ttsAbortRef.current) break
-
-          // 첫 문장 재생 시작 시 status=speaking 진입
-          if (!isSpeakingRef.current) {
-            isSpeakingRef.current = true
-            setStatus('speaking')
-          }
-
-          if (avatar && avatar.speak) {
-            await avatar.speak(buf)
-          }
+          buf = await bufPromise   // 이미 완료됐으면 즉시 resolve
         } catch (e) {
-          console.warn('[tts queue] error:', e)
+          console.warn('[tts queue] fetch fail:', e)
+          continue
+        }
+
+        if (ttsAbortRef.current) break
+
+        // 첫 문장 재생 시작 시 status=speaking 진입
+        if (!isSpeakingRef.current) {
+          isSpeakingRef.current = true
+          setStatus('speaking')
+        }
+
+        if (avatar && avatar.speak) {
+          await avatar.speak(buf)
         }
       }
     } finally {
       ttsRunningRef.current = false
       ttsAbortRef.current = false
-      // 큐 완전히 비고 abort 도 아니면 connected 복귀
       if (isSpeakingRef.current && ttsQueueRef.current.length === 0) {
         isSpeakingRef.current = false
         setStatus(s => (s === 'speaking' ? 'connected' : s))
@@ -316,12 +311,26 @@ export default function App() {
     }
   }, [])
 
-  // 외부에서 큐에 문장 추가 (streaming sentence boundary 만났을 때)
+  // 외부에서 큐에 문장 추가 (streaming sentence boundary 만났을 때).
+  // ★ 핵심: fetch 를 enqueue 시점에 즉시 시작 → Promise 를 큐에 푸시.
+  //         문장 N+1 TTS 가 문장 N 재생 중에 병렬로 미리 만들어진다.
   const enqueueTTS = useCallback((sentence) => {
     const s = (sentence || '').trim()
     if (!s) return
     if (conversationModeRef.current === 'ttt') return  // 텍스트 전용 모드
-    ttsQueueRef.current.push(s)
+    const clean = sanitizeForTTS(normalizeTtsText(s))
+    if (!clean) return
+
+    const bufPromise = fetch('/api/tts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: clean }),
+    }).then(res => {
+      if (!res.ok) throw new Error('tts http ' + res.status)
+      return res.arrayBuffer()
+    })
+
+    ttsQueueRef.current.push(bufPromise)
     processTTSQueue()
   }, [processTTSQueue])
 
@@ -371,8 +380,14 @@ export default function App() {
     }
 
     try {
-      const frame = captureCameraFrame()
+      // ★ Vision keyword gate — 카메라/배경 의도가 있을 때만 프레임 첨부
+      //   매 발화마다 vision LLM 호출하면 7초씩 느려지고, 의도 없을 때 LLM이
+      //   엉뚱하게 "보이는 것을 묘사"하는 폴백 행동이 자주 발생함.
+      const VISION_INTENT = /보여|보이|보세요|뒤에|뒷.{0,2}배경|배경에|여기.{0,2}어|주변|화면|카메라|캠|영상|모습|어떻게.{0,3}보|뭐가.{0,3}보/
+      const wantsVision = VISION_INTENT.test(text)
+      const frame = wantsVision ? captureCameraFrame() : null
       const images = frame ? [frame] : []
+      console.log('[chat-stream] wantsVision=' + wantsVision + ' images=' + images.length)
 
       const res = await fetch('/api/chat-stream', {
         method: 'POST',
