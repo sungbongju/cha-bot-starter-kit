@@ -88,4 +88,4 @@ dir C:\
 
 📍 **현재 위치**: Chapter 1 / 8
 
-이전: (없음) | [다음 → Chapter 2: 도구 설치](./02-install-tools.md)
+[← 이전: Chapter 0 준비물](./00-prerequisites.md) | [다음 → Chapter 2: 도구 설치 확인](./02-install-tools.md)
