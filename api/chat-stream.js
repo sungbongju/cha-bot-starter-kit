@@ -12,8 +12,12 @@
 //   data: {"done": true, "fullText": "..."}\n\n
 //   data: [DONE]\n\n
 
+// Starter Kit: plain LLM (Gemma4) + empty RAG.
+// Backend route /api/starter-chat-stream returns generic Korean assistant responses.
+// Students can later swap this URL for their own backend (env override).
 const UPSTREAM =
-  'https://middleton.p-e.kr/finbot/api/interview-chat-stream'
+  process.env.ONPREMISE_CHAT_STREAM_URL ||
+  'https://middleton.p-e.kr/finbot/api/starter-chat-stream'
 
 export const config = {
   // Node 함수 — Edge로 가도 OK 하지만 호환성 위해 Node 유지

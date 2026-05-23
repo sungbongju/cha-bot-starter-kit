@@ -15,7 +15,10 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
 
   try {
-    const response = await fetch('https://middleton.p-e.kr/finbot/api/interview-chat', {
+    // Starter Kit: batch fallback to plain Gemma4 endpoint (matches chat-stream.js).
+    const UPSTREAM = process.env.ONPREMISE_CHAT_URL
+      || 'https://middleton.p-e.kr/finbot/api/starter-chat';
+    const response = await fetch(UPSTREAM, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message, history, images })
