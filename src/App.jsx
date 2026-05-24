@@ -4,6 +4,7 @@ import ChatPanel from './components/ChatPanel'
 import styles from './App.module.css'
 import { newSessionId, saveChat } from './lib/api'
 import { MicRecorder, isMicRecorderSupported } from './lib/stt'
+import { retrieve as retrieveRagContext, warmUp as warmUpRag } from './lib/rag'
 
 // cha-bot-starter-kit
 // ─────────────────────────────────────────────────────────────
@@ -66,6 +67,9 @@ export default function App() {
     document.documentElement.setAttribute('data-theme', theme)
     localStorage.setItem('theme', theme)
   }, [theme])
+
+  // 앱 로드 시 RAG 인덱스 미리 fetch (첫 질문 지연 방지)
+  useEffect(() => { warmUpRag() }, [])
 
   const toggleTheme = useCallback(() => {
     setTheme(prev => (prev === 'light' ? 'dark' : 'light'))
@@ -296,10 +300,22 @@ export default function App() {
       const frame = wantsVision ? captureCameraFrame() : null
       const images = frame ? [frame] : []
 
+      // Browser-side RAG — retrieve top-K chunks from /public/rag/{chunks,embeddings}.json.
+      // Returns [] if no RAG files / no relevant matches (bot then uses generic LLM).
+      // Customize what's in public/rag/chunks.json to make this bot YOUR bot.
+      let ragContext = []
+      try { ragContext = await retrieveRagContext(text, { topK: 3, minScore: 0.4 }) }
+      catch (e) { console.warn('[rag] retrieve skipped:', e) }
+
       const res = await fetch('/api/chat-stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text, history: historyRef.current.slice(-8), images })
+        body: JSON.stringify({
+          message: text,
+          history: historyRef.current.slice(-8),
+          images,
+          context: ragContext,
+        }),
       })
       if (!res.ok || !res.body) throw new Error('chat-stream http ' + res.status)
 
